@@ -1,0 +1,19 @@
+{
+  "safe_mode": true,
+  "blocked_methods": [
+    "DELETE",
+    "PUT"
+  ],
+  "dangerous_keywords": [
+    "delete",
+    "remove",
+    "drop",
+    "truncate",
+    "destroy",
+    "clear",
+    "purge"
+  ],
+  "blacklist": [],
+  "custom_headers": {},
+  "agreed_disclaimer": true
+}
