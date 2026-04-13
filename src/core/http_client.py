@@ -93,16 +93,16 @@ class HttpClient:
         """
         设置重试适配器
         
-        为 Session 配置自动重试机制，处理连接错误和特定状态码。
+        为 Session 配置连接级别的重试机制，仅处理连接错误。
+        业务级别的重试（状态码重试）由 request 方法手动控制，避免双重重试。
         """
         retry_strategy = Retry(
-            total=self.max_retries,
-            backoff_factor=self.retry_delay,
-            status_forcelist=[429, 500, 502, 503, 504],
+            total=0,
+            raise_on_status=False,
             allowed_methods=["HEAD", "GET", "OPTIONS", "POST", "PUT", "DELETE", "PATCH"],
         )
         
-        adapter = HTTPAdapter(max_retries=retry_strategy)
+        adapter = HTTPAdapter(max_retries=retry_strategy, pool_maxsize=20)
         self._session.mount("http://", adapter)
         self._session.mount("https://", adapter)
         logger.debug("重试适配器配置完成")

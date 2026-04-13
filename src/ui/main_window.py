@@ -14,8 +14,8 @@ from PyQt6.QtWidgets import (
     QListWidgetItem, QInputDialog, QFileDialog, QMessageBox, QFrame,
     QGraphicsDropShadowEffect, QScrollArea
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPropertyAnimation, QEasingCurve, QSize
-from PyQt6.QtGui import QIcon, QColor, QFont, QAction, QPalette, QLinearGradient, QPainter
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPropertyAnimation, QEasingCurve, QSize, QTimer, QSequentialAnimationGroup, QParallelAnimationGroup
+from PyQt6.QtGui import QIcon, QColor, QFont, QAction, QPalette, QLinearGradient, QPainter, QPen, QBrush
 
 from src.parsers import SwaggerParser, AspNetParser
 from src.engines import TestExecutor, Deduplicator, SafeMode
@@ -25,32 +25,56 @@ from src.core.http_client import HttpClient
 
 APP_NAME = "APISentinel_Bluechips"
 APP_AUTHOR = "bluechips"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 
 
 class ModernButton(QPushButton):
-    """现代化按钮 - bluechips 设计"""
+    """现代化按钮 - bluechips 设计，带丝滑动画"""
     
     def __init__(self, text="", parent=None):
         super().__init__(text, parent)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._opacity = 1.0
-        
+        self._scale = 1.0
+        self._shadow_offset = 4
+        self._animation = None
+    
     def enterEvent(self, event):
-        self.animate_opacity(0.85)
+        self._animate_scale(1.03)
+        self._animate_shadow(8)
         super().enterEvent(event)
     
     def leaveEvent(self, event):
-        self.animate_opacity(1.0)
+        self._animate_scale(1.0)
+        self._animate_shadow(4)
         super().leaveEvent(event)
     
-    def animate_opacity(self, value):
-        self._opacity = value
-        self.update()
+    def _animate_scale(self, target):
+        animation = QPropertyAnimation(self, b"geometry")
+        animation.setDuration(150)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        geo = self.geometry()
+        center = geo.center()
+        new_w = int(geo.width() * target)
+        new_h = int(geo.height() * target)
+        new_geo = geo.__class__(0, 0, new_w, new_h)
+        new_geo.moveCenter(center)
+        animation.setStartValue(geo)
+        animation.setEndValue(new_geo)
+        animation.start()
+        self._animation = animation
+    
+    def _animate_shadow(self, offset):
+        effect = self.graphicsEffect()
+        if effect and isinstance(effect, QGraphicsDropShadowEffect):
+            animation = QPropertyAnimation(effect, b"offset")
+            animation.setDuration(150)
+            animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+            animation.setEndValue(QPointF(0, offset))
+            animation.start()
 
 
 class ModernGroupBox(QGroupBox):
-    """现代化分组框 - 无边框阴影效果"""
+    """现代化分组框 - 无边框阴影效果，带丝滑动画"""
     
     def __init__(self, title="", parent=None):
         super().__init__(title, parent)
@@ -59,9 +83,66 @@ class ModernGroupBox(QGroupBox):
     def _setup_shadow(self):
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(20)
-        shadow.setColor(QColor(0, 0, 0, 30))
+        shadow.setColor(QColor(0, 0, 0, 40))
         shadow.setOffset(0, 4)
         self.setGraphicsEffect(shadow)
+    
+    def enterEvent(self, event):
+        effect = self.graphicsEffect()
+        if effect and isinstance(effect, QGraphicsDropShadowEffect):
+            anim = QPropertyAnimation(effect, b"blurRadius")
+            anim.setDuration(200)
+            anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+            anim.setEndValue(30)
+            anim.start()
+            self._anim = anim
+        super().enterEvent(event)
+    
+    def leaveEvent(self, event):
+        effect = self.graphicsEffect()
+        if effect and isinstance(effect, QGraphicsDropShadowEffect):
+            anim = QPropertyAnimation(effect, b"blurRadius")
+            anim.setDuration(200)
+            anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+            anim.setEndValue(20)
+            anim.start()
+            self._anim = anim
+        super().leaveEvent(event)
+
+
+class TestWorker(QThread):
+    """测试执行工作线程"""
+    progress = pyqtSignal(int, int)
+    result_ready = pyqtSignal(object)
+    finished_all = pyqtSignal(list)
+    error_occurred = pyqtSignal(str)
+    
+    def __init__(self, executor, endpoints, max_workers=5):
+        super().__init__()
+        self.executor = executor
+        self.endpoints = endpoints
+        self.max_workers = max_workers
+        self._is_stopped = False
+    
+    def run(self):
+        results = []
+        total = len(self.endpoints)
+        
+        for i, endpoint in enumerate(self.endpoints):
+            if self._is_stopped:
+                break
+            try:
+                result = self.executor.execute_endpoint(endpoint)
+                results.append(result)
+                self.result_ready.emit(result)
+            except Exception as e:
+                self.error_occurred.emit(f"{endpoint.method} {endpoint.path}: {str(e)}")
+            self.progress.emit(i + 1, total)
+        
+        self.finished_all.emit(results)
+    
+    def stop(self):
+        self._is_stopped = True
 
 
 class MainWindow(QMainWindow):
@@ -77,6 +158,7 @@ class MainWindow(QMainWindow):
         
         self._init_ui()
         self._init_signals()
+        self._play_entrance_animation()
         
         self.http_client = HttpClient()
         self.test_executor = TestExecutor(
@@ -105,9 +187,9 @@ class MainWindow(QMainWindow):
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         
         gradient = QLinearGradient(0, 0, 256, 256)
-        gradient.setColorAt(0, QColor(102, 126, 234))
-        gradient.setColorAt(0.5, QColor(118, 75, 162))
-        gradient.setColorAt(1, QColor(240, 147, 251))
+        gradient.setColorAt(0, QColor(14, 165, 233))
+        gradient.setColorAt(0.5, QColor(6, 182, 212))
+        gradient.setColorAt(1, QColor(20, 184, 166))
         
         painter.setBrush(gradient)
         painter.setPen(Qt.PenStyle.NoPen)
@@ -127,7 +209,7 @@ class MainWindow(QMainWindow):
         self.setStyleSheet("""
             QMainWindow {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #667eea, stop:0.5 #764ba2, stop:1 #f093fb);
+                    stop:0 #0f172a, stop:0.5 #1e293b, stop:1 #0f172a);
                 margin: 0px;
                 padding: 0px;
             }
@@ -148,8 +230,8 @@ class MainWindow(QMainWindow):
                 margin-right: 0px;
                 margin-bottom: 0px;
                 padding: 25px 15px 15px 15px;
-                background-color: rgba(255, 255, 255, 0.95);
-                color: #2d3748;
+                background-color: rgba(30, 41, 59, 0.95);
+                color: #e2e8f0;
             }
             
             QGroupBox::title {
@@ -159,7 +241,7 @@ class MainWindow(QMainWindow):
                 top: 8px;
                 padding: 8px 20px;
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #667eea, stop:1 #764ba2);
+                    stop:0 #0ea5e9, stop:1 #06b6d4);
                 color: white;
                 font-size: 16px;
                 font-weight: bold;
@@ -168,7 +250,7 @@ class MainWindow(QMainWindow):
             
             QPushButton {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #667eea, stop:1 #764ba2);
+                    stop:0 #0ea5e9, stop:1 #0284c7);
                 color: white;
                 border: none;
                 border-radius: 12px;
@@ -181,49 +263,51 @@ class MainWindow(QMainWindow):
             
             QPushButton:hover {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #5a67d8, stop:1 #6b46c1);
+                    stop:0 #38bdf8, stop:1 #0ea5e9);
             }
             
             QPushButton:pressed {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #4c51bf, stop:1 #553c9a);
+                    stop:0 #0284c7, stop:1 #0369a1);
             }
             
             QPushButton:disabled {
-                background: #cbd5e0;
-                color: #a0aec0;
+                background: #475569;
+                color: #64748b;
             }
             
             QLineEdit {
-                border: none;
+                border: 2px solid #334155;
                 border-radius: 12px;
                 padding: 12px 16px;
-                background-color: rgba(255, 255, 255, 0.9);
+                background-color: rgba(30, 41, 59, 0.9);
                 font-size: 13px;
-                color: #2d3748;
-                selection-background-color: #667eea;
+                color: #e2e8f0;
+                selection-background-color: #0ea5e9;
             }
             
             QLineEdit:focus {
-                background-color: white;
+                background-color: #1e293b;
+                border-color: #0ea5e9;
             }
             
             QLineEdit::placeholder {
-                color: #a0aec0;
+                color: #64748b;
             }
             
             QComboBox {
-                border: none;
+                border: 2px solid #334155;
                 border-radius: 12px;
                 padding: 12px 16px;
-                background-color: rgba(255, 255, 255, 0.9);
+                background-color: rgba(30, 41, 59, 0.9);
                 font-size: 13px;
                 min-width: 160px;
-                color: #2d3748;
+                color: #e2e8f0;
             }
             
             QComboBox:focus {
-                background-color: white;
+                background-color: #1e293b;
+                border-color: #0ea5e9;
             }
             
             QComboBox::drop-down {
@@ -237,50 +321,51 @@ class MainWindow(QMainWindow):
                 image: none;
                 border-left: 6px solid transparent;
                 border-right: 6px solid transparent;
-                border-top: 8px solid #667eea;
+                border-top: 8px solid #0ea5e9;
                 margin-right: 12px;
             }
             
             QComboBox QAbstractItemView {
                 border: none;
                 border-radius: 12px;
-                background-color: white;
+                background-color: #1e293b;
                 padding: 8px;
-                selection-background-color: #667eea;
+                selection-background-color: #0ea5e9;
                 selection-color: white;
+                color: #e2e8f0;
             }
             
             QTableWidget {
-                background-color: rgba(255, 255, 255, 0.95);
+                background-color: rgba(30, 41, 59, 0.95);
                 border: none;
                 border-radius: 12px;
-                gridline-color: #e2e8f0;
+                gridline-color: #334155;
                 font-size: 12px;
-                color: #2d3748;
+                color: #e2e8f0;
             }
             
             QTableWidget::item {
                 padding: 12px 10px;
-                border-bottom: 1px solid #e2e8f0;
-                border-right: 1px solid #e2e8f0;
+                border-bottom: 1px solid #334155;
+                border-right: 1px solid #334155;
             }
             
             QTableWidget::item:selected {
-                background-color: #667eea;
+                background-color: #0ea5e9;
                 color: white;
             }
             
             QTableWidget::item:hover {
-                background-color: #f7fafc;
+                background-color: #334155;
             }
             
             QHeaderView::section {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #667eea, stop:1 #764ba2);
+                    stop:0 #0ea5e9, stop:1 #0284c7);
                 color: white;
                 padding: 14px 10px;
                 border: none;
-                border-right: 2px solid rgba(255, 255, 255, 0.3);
+                border-right: 2px solid rgba(255, 255, 255, 0.1);
                 font-weight: bold;
                 font-size: 12px;
             }
@@ -301,22 +386,22 @@ class MainWindow(QMainWindow):
                 border: none;
                 border-radius: 10px;
                 text-align: center;
-                background-color: rgba(255, 255, 255, 0.5);
+                background-color: #334155;
                 height: 20px;
                 font-weight: bold;
                 font-size: 11px;
-                color: #4a5568;
+                color: #e2e8f0;
             }
             
             QProgressBar::chunk {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #48bb78, stop:0.5 #38b2ac, stop:1 #4299e1);
+                    stop:0 #0ea5e9, stop:0.5 #06b6d4, stop:1 #14b8a6);
                 border-radius: 10px;
             }
             
             QToolBar {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #1a202c, stop:1 #2d3748);
+                    stop:0 #0f172a, stop:1 #1e293b);
                 border: none;
                 padding: 12px 15px;
                 spacing: 10px;
@@ -324,7 +409,7 @@ class MainWindow(QMainWindow):
             
             QToolBar QToolButton {
                 background-color: transparent;
-                color: white;
+                color: #94a3b8;
                 border: none;
                 border-radius: 12px;
                 padding: 12px 20px;
@@ -334,17 +419,19 @@ class MainWindow(QMainWindow):
             }
             
             QToolBar QToolButton:hover {
-                background-color: rgba(255, 255, 255, 0.15);
+                background-color: rgba(14, 165, 233, 0.15);
+                color: #38bdf8;
             }
             
             QToolBar QToolButton:pressed {
-                background-color: rgba(255, 255, 255, 0.25);
+                background-color: rgba(14, 165, 233, 0.25);
+                color: #0ea5e9;
             }
             
             QStatusBar {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #1a202c, stop:1 #2d3748);
-                color: white;
+                    stop:0 #0f172a, stop:1 #1e293b);
+                color: #94a3b8;
                 font-size: 12px;
                 padding: 8px 15px;
                 border: none;
@@ -359,14 +446,14 @@ class MainWindow(QMainWindow):
             
             QScrollBar::handle:vertical {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #667eea, stop:1 #764ba2);
+                    stop:0 #0ea5e9, stop:1 #06b6d4);
                 border-radius: 7px;
                 min-height: 40px;
             }
             
             QScrollBar::handle:vertical:hover {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #5a67d8, stop:1 #6b46c1);
+                    stop:0 #38bdf8, stop:1 #0ea5e9);
             }
             
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
@@ -378,7 +465,7 @@ class MainWindow(QMainWindow):
             }
             
             QLabel {
-                color: #4a5568;
+                color: #94a3b8;
                 font-size: 13px;
                 background: transparent;
             }
@@ -386,40 +473,40 @@ class MainWindow(QMainWindow):
             QCheckBox {
                 spacing: 10px;
                 font-size: 13px;
-                color: #2d3748;
+                color: #e2e8f0;
             }
             
             QCheckBox::indicator {
                 width: 22px;
                 height: 22px;
                 border-radius: 6px;
-                border: 2px solid #cbd5e0;
-                background-color: white;
+                border: 2px solid #475569;
+                background-color: #1e293b;
             }
             
             QCheckBox::indicator:hover {
-                border-color: #667eea;
+                border-color: #0ea5e9;
             }
             
             QCheckBox::indicator:checked {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #667eea, stop:1 #764ba2);
-                border-color: #667eea;
+                    stop:0 #0ea5e9, stop:1 #06b6d4);
+                border-color: #0ea5e9;
             }
             
             QSplitter::handle {
-                background-color: rgba(255, 255, 255, 0.3);
+                background-color: #334155;
                 height: 4px;
                 border-radius: 2px;
             }
             
             QSplitter::handle:hover {
-                background-color: rgba(102, 126, 234, 0.8);
+                background-color: #0ea5e9;
             }
             
             QMenu {
-                background-color: white;
-                border: none;
+                background-color: #1e293b;
+                border: 1px solid #334155;
                 border-radius: 12px;
                 padding: 8px;
             }
@@ -427,28 +514,75 @@ class MainWindow(QMainWindow):
             QMenu::item {
                 padding: 10px 30px;
                 border-radius: 8px;
-                color: #2d3748;
+                color: #e2e8f0;
             }
             
             QMenu::item:selected {
-                background-color: #667eea;
+                background-color: #0ea5e9;
                 color: white;
             }
             
             QMessageBox {
-                background-color: white;
+                background-color: #1e293b;
                 border-radius: 16px;
             }
             
             QMessageBox QLabel {
-                color: #2d3748;
+                color: #e2e8f0;
                 font-size: 13px;
             }
             
             QMessageBox QPushButton {
                 min-width: 80px;
             }
+            
+            QTreeWidget {
+                background-color: rgba(30, 41, 59, 0.95);
+                border: none;
+                border-radius: 12px;
+                font-size: 12px;
+                color: #e2e8f0;
+            }
+            
+            QTreeWidget::item {
+                padding: 6px;
+                border-bottom: 1px solid #334155;
+            }
+            
+            QTreeWidget::item:selected {
+                background-color: #0ea5e9;
+                color: white;
+            }
+            
+            QTreeWidget::item:hover:!selected {
+                background-color: #334155;
+            }
         """)
+    
+    def _play_entrance_animation(self):
+        """播放窗口入场动画"""
+        self.setWindowOpacity(0)
+        
+        opacity_anim = QPropertyAnimation(self, b"windowOpacity")
+        opacity_anim.setDuration(400)
+        opacity_anim.setStartValue(0.0)
+        opacity_anim.setEndValue(1.0)
+        opacity_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        
+        geo = self.geometry()
+        slide_anim = QPropertyAnimation(self, b"geometry")
+        slide_anim.setDuration(500)
+        slide_anim.setStartValue(
+            geo.__class__(geo.x(), geo.y() + 30, geo.width(), geo.height())
+        )
+        slide_anim.setEndValue(geo)
+        slide_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        
+        group = QParallelAnimationGroup()
+        group.addAnimation(opacity_anim)
+        group.addAnimation(slide_anim)
+        group.start()
+        self._entrance_anim = group
     
     def _init_ui(self):
         """初始化用户界面"""
@@ -507,6 +641,10 @@ class MainWindow(QMainWindow):
         
         toolbar.addSeparator()
         
+        self.fuzzer_action = QAction("🎯 Fuzzer", self)
+        self.fuzzer_action.setToolTip("参数变异测试")
+        toolbar.addAction(self.fuzzer_action)
+        
         self.settings_action = QAction("⚙ 设置", self)
         self.settings_action.setToolTip("打开设置对话框")
         toolbar.addAction(self.settings_action)
@@ -520,6 +658,7 @@ class MainWindow(QMainWindow):
             self.stop_action: "#f56565",
             self.clear_action: "#ed8936",
             self.export_action: "#4299e1",
+            self.fuzzer_action: "#f6ad55",
             self.settings_action: "#9f7aea"
         }
         
@@ -711,6 +850,7 @@ class MainWindow(QMainWindow):
         self.stop_action.triggered.connect(self._on_stop_test)
         self.clear_action.triggered.connect(self._on_clear_results)
         self.export_action.triggered.connect(self._on_export_results)
+        self.fuzzer_action.triggered.connect(self._on_fuzzer)
         self.settings_action.triggered.connect(self._on_settings)
         
         self.apply_button.clicked.connect(self._on_apply_filter)
@@ -830,21 +970,44 @@ class MainWindow(QMainWindow):
             except ValueError:
                 QMessageBox.warning(self, "⚠️ 提示", "状态码格式无效")
         
+        self.test_results = []
+        self.results_table.setRowCount(0)
         self.status_bar.showMessage(f"🚀 正在测试 {len(selected_endpoints)} 个接口...")
         
-        try:
-            self.test_results = self.test_executor.execute_all(selected_endpoints, max_workers=5)
-            self.test_results = self.deduplicator.deduplicate(self.test_results)
-            
-            self._populate_results_table()
-            self.status_bar.showMessage(f"✅ 测试完成: {len(self.test_results)} 个结果")
-        except Exception as e:
-            QMessageBox.critical(self, "❌ 错误", f"测试失败: {str(e)}")
-            self.status_bar.showMessage("❌ 测试失败")
+        self._test_worker = TestWorker(self.test_executor, selected_endpoints)
+        self._test_worker.result_ready.connect(self._on_single_result)
+        self._test_worker.progress.connect(self._on_test_progress)
+        self._test_worker.finished_all.connect(self._on_test_finished)
+        self._test_worker.error_occurred.connect(self._on_test_error)
+        self._test_worker.start()
+    
+    def _on_single_result(self, result):
+        """单个测试结果就绪"""
+        self.test_results.append(result)
+        self._add_result_row(result, self.results_table.rowCount())
+    
+    def _on_test_progress(self, completed, total):
+        """测试进度更新"""
+        self.status_bar.showMessage(f"🔄 测试进度: {completed}/{total}")
+    
+    def _on_test_finished(self, results):
+        """所有测试完成"""
+        self.test_results = self.deduplicator.deduplicate(self.test_results)
+        self._populate_results_table()
+        self.status_bar.showMessage(f"✅ 测试完成: {len(self.test_results)} 个结果")
+    
+    def _on_test_error(self, error_msg):
+        """测试出错"""
+        self.status_bar.showMessage(f"❌ 测试出错: {error_msg}")
     
     def _on_stop_test(self):
         """处理停止测试按钮点击"""
-        self.status_bar.showMessage("⏹ 测试已停止")
+        if hasattr(self, '_test_worker') and self._test_worker.isRunning():
+            self._test_worker.stop()
+            self._test_worker.wait(3000)
+            self.status_bar.showMessage("⏹ 测试已停止")
+        else:
+            self.status_bar.showMessage("⏹ 没有正在运行的测试")
     
     def _on_clear_results(self):
         """处理清空结果按钮点击"""
@@ -858,16 +1021,40 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "⚠️ 提示", "没有可导出的结果")
             return
         
+        format_choice, ok = QInputDialog.getItem(
+            self, "📊 导出格式",
+            "选择导出格式:",
+            ["Excel (.xlsx)", "CSV (.csv)", "JSON (.json)", "HTML (.html)"],
+            0, False
+        )
+        if not ok:
+            return
+        
+        ext_map = {
+            "Excel (.xlsx)": (".xlsx", "Excel 文件 (*.xlsx)"),
+            "CSV (.csv)": (".csv", "CSV 文件 (*.csv)"),
+            "JSON (.json)": (".json", "JSON 文件 (*.json)"),
+            "HTML (.html)": (".html", "HTML 文件 (*.html)")
+        }
+        ext, filter_str = ext_map[format_choice]
+        
         file_dialog = QFileDialog()
         file_path, _ = file_dialog.getSaveFileName(
-            self, "导出结果", f"{APP_NAME}_results.xlsx", "Excel 文件 (*.xlsx)"
+            self, "导出结果", f"{APP_NAME}_results{ext}", filter_str
         )
         
         if file_path:
             from src.engines import Exporter
             exporter = Exporter()
             try:
-                exporter.export_to_excel(self.test_results, file_path)
+                if format_choice.startswith("Excel"):
+                    exporter.export_to_excel(self.test_results, file_path)
+                elif format_choice.startswith("CSV"):
+                    exporter.export_to_csv(self.test_results, file_path)
+                elif format_choice.startswith("JSON"):
+                    exporter.export_to_json(self.test_results, file_path)
+                elif format_choice.startswith("HTML"):
+                    exporter.export_to_html(self.test_results, file_path)
                 QMessageBox.information(self, "✅ 成功", f"结果已导出到: {file_path}")
             except Exception as e:
                 QMessageBox.critical(self, "❌ 错误", f"导出失败: {str(e)}")
@@ -876,11 +1063,85 @@ class MainWindow(QMainWindow):
         """处理设置按钮点击"""
         from src.ui import SettingsDialog
         dialog = SettingsDialog(self)
-        dialog.exec()
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._rebuild_test_executor()
+    
+    def _rebuild_test_executor(self):
+        """根据设置重建 TestExecutor"""
+        import json
+        try:
+            with open('config/settings.json', 'r', encoding='utf-8') as f:
+                settings = json.load(f)
+            self.test_executor = TestExecutor(
+                enable_sensitive_detection=settings.get("enable_sensitive_detection", True),
+                enable_jwt_detection=settings.get("enable_jwt_detection", True),
+                enable_idor_detection=settings.get("enable_idor_detection", False),
+                enable_auth_bypass_detection=settings.get("enable_auth_bypass_detection", False),
+                enable_upload_detection=settings.get("enable_upload_detection", False)
+            )
+            self.status_bar.showMessage("✅ 检测器设置已更新")
+        except Exception as e:
+            self.status_bar.showMessage(f"⚠️ 更新检测器设置失败: {e}")
+    
+    def _on_fuzzer(self):
+        """处理 Fuzzer 按钮点击"""
+        selected_endpoints = []
+        for row in range(self.interface_table.rowCount()):
+            checkbox = self.interface_table.cellWidget(row, 0)
+            if checkbox and checkbox.isChecked():
+                selected_endpoints.append(self.endpoints[row])
+        
+        if not selected_endpoints:
+            QMessageBox.warning(self, "⚠️ 提示", "请先选择要 Fuzzing 的接口")
+            return
+        
+        from src.engines import Fuzzer
+        fuzzer = Fuzzer()
+        
+        categories, ok = QInputDialog.getItem(
+            self, "🎯 Fuzzer 设置",
+            "选择 Payload 类别:",
+            ["all", "sqli", "xss", "path_traversal", "command_injection"],
+            0, False
+        )
+        if not ok:
+            return
+        
+        self.test_results = []
+        self.results_table.setRowCount(0)
+        self.status_bar.showMessage(f"🎯 正在 Fuzzing {len(selected_endpoints)} 个接口...")
+        
+        self._fuzz_worker = TestWorker(self.test_executor, selected_endpoints)
+        
+        def run_fuzz():
+            fuzz_results = []
+            for endpoint in selected_endpoints:
+                try:
+                    results = fuzzer.test_endpoint(endpoint, self.http_client, categories=[categories] if categories != "all" else None)
+                    fuzz_results.extend(results)
+                except Exception as e:
+                    pass
+            return fuzz_results
+        
+        self._fuzz_worker.finished_all.connect(lambda results: self.status_bar.showMessage(f"✅ Fuzzing 完成"))
+        self._fuzz_worker.start()
     
     def _on_apply_filter(self):
         """处理应用过滤按钮点击"""
-        self.status_bar.showMessage("✓ 过滤已应用")
+        status_filter = self.status_input.text().strip()
+        if status_filter:
+            try:
+                codes = [int(c.strip()) for c in status_filter.split(",")]
+                filtered = [r for r in self.test_results if r.response_status in codes]
+                self.results_table.setRowCount(0)
+                for result in filtered:
+                    self._add_result_row(result, self.results_table.rowCount())
+                self.status_bar.showMessage(f"✅ 过滤完成: 显示 {len(filtered)} 个结果")
+            except ValueError:
+                self.status_bar.showMessage("⚠️ 状态码格式无效")
+        else:
+            self._populate_results_table()
+            self.status_bar.showMessage("✅ 过滤已清除")
     
     def _on_result_double_click(self, item):
         """处理结果双击"""
@@ -941,13 +1202,13 @@ class MainWindow(QMainWindow):
             view_button.setStyleSheet("""
                 QPushButton {
                     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 #667eea, stop:1 #764ba2);
+                        stop:0 #0ea5e9, stop:1 #0284c7);
                     padding: 6px 12px;
                     border-radius: 8px;
                 }
                 QPushButton:hover {
                     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 #5a67d8, stop:1 #6b46c1);
+                        stop:0 #38bdf8, stop:1 #0ea5e9);
                 }
             """)
             view_button.clicked.connect(lambda _, r=result: self._show_result_details(r))
@@ -961,26 +1222,26 @@ class MainWindow(QMainWindow):
         dialog.setStyleSheet("""
             QDialog {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #667eea, stop:0.5 #764ba2, stop:1 #f093fb);
+                    stop:0 #0f172a, stop:0.5 #1e293b, stop:1 #0f172a);
             }
             QTextEdit {
-                border: none;
+                border: 2px solid #334155;
                 border-radius: 12px;
                 padding: 15px;
                 font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
                 font-size: 12px;
-                background-color: rgba(255, 255, 255, 0.95);
-                color: #2d3748;
+                background-color: rgba(30, 41, 59, 0.95);
+                color: #e2e8f0;
             }
             QLabel {
                 font-weight: bold;
                 font-size: 14px;
-                color: white;
+                color: #e2e8f0;
                 background: transparent;
             }
             QPushButton {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #48bb78, stop:1 #38a169);
+                    stop:0 #0ea5e9, stop:1 #0284c7);
                 color: white;
                 border: none;
                 border-radius: 12px;
@@ -990,7 +1251,7 @@ class MainWindow(QMainWindow):
             }
             QPushButton:hover {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #38a169, stop:1 #2f855a);
+                    stop:0 #38bdf8, stop:1 #0ea5e9);
             }
         """)
         

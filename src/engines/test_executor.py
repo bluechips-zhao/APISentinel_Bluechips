@@ -322,6 +322,10 @@ class TestExecutor:
         response_time = end_time - start_time
         
         sensitive_info = []
+        jwt_info = []
+        idor_info = {}
+        auth_bypass_info = []
+        upload_info = []
         
         if self._sensitive_detector and response_body:
             try:
@@ -334,11 +338,38 @@ class TestExecutor:
         
         if self._jwt_detector and response_body:
             try:
-                jwt_results = self._jwt_detector.scan_response(response_body, response_headers)
-                if jwt_results:
-                    logger.debug(f"JWT 检测完成: 发现 {len(jwt_results)} 个 JWT")
+                jwt_info = self._jwt_detector.scan_response(response_body, response_headers)
+                if jwt_info:
+                    logger.debug(f"JWT 检测完成: 发现 {len(jwt_info)} 个 JWT")
             except Exception as e:
                 logger.error(f"JWT 检测失败: {e}")
+        
+        if self._idor_detector:
+            try:
+                idor_info = self._idor_detector.detect_idor(endpoint, self._http_client)
+                if idor_info.get("is_vulnerable"):
+                    logger.warning(f"IDOR 漏洞检测: {endpoint.method} {endpoint.path} - 存在漏洞")
+            except Exception as e:
+                logger.error(f"IDOR 检测失败: {e}")
+        
+        if self._auth_bypass_detector:
+            try:
+                auth_bypass_info = self._auth_bypass_detector.scan_endpoint(endpoint, self._http_client)
+                bypass_count = sum(1 for r in auth_bypass_info if r.get("bypass_success"))
+                if bypass_count > 0:
+                    logger.warning(f"认证绕过检测: {endpoint.method} {endpoint.path} - 发现 {bypass_count} 个绕过")
+            except Exception as e:
+                logger.error(f"认证绕过检测失败: {e}")
+        
+        if self._upload_detector:
+            try:
+                is_upload = self._upload_detector.detect_upload_endpoint(endpoint)
+                if is_upload:
+                    upload_info = self._upload_detector.test_upload(endpoint)
+                    if upload_info.get("vulnerability"):
+                        logger.warning(f"上传漏洞检测: {endpoint.method} {endpoint.path} - 存在漏洞")
+            except Exception as e:
+                logger.error(f"上传漏洞检测失败: {e}")
         
         result = TestResult(
             request_id=request_id,
@@ -351,6 +382,10 @@ class TestExecutor:
             response_length=response_length,
             response_time=response_time,
             sensitive_info=sensitive_info,
+            jwt_info=jwt_info,
+            idor_info=idor_info,
+            auth_bypass_info=auth_bypass_info,
+            upload_info=upload_info,
             timestamp=datetime.now(),
             error=error_msg,
         )

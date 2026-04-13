@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QInputDialog, QFileDialog, QMessageBox, QSpinBox, QDoubleSpinBox,
     QScrollArea, QGraphicsDropShadowEffect
 )
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt, QSize, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup
 from PyQt6.QtGui import QColor
 import json
 import os
@@ -52,28 +52,26 @@ class SettingsDialog(QDialog):
         self._apply_modern_style()
         
         self._init_ui()
+        self._play_entrance_animation()
     
     def _apply_modern_style(self):
         """应用现代化样式 - bluechips 专属设计"""
         self.setStyleSheet("""
-            /* 对话框背景 */
             QDialog {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #667eea, stop:0.5 #764ba2, stop:1 #f093fb);
+                    stop:0 #0f172a, stop:0.5 #1e293b, stop:1 #0f172a);
             }
             
-            /* 标签页容器 */
             QTabWidget::pane {
                 border: none;
                 border-radius: 16px;
-                background-color: rgba(255, 255, 255, 0.95);
+                background-color: rgba(30, 41, 59, 0.95);
                 padding: 15px;
             }
             
-            /* 标签页头部 */
             QTabBar::tab {
-                background-color: rgba(255, 255, 255, 0.3);
-                color: white;
+                background-color: rgba(51, 65, 85, 0.5);
+                color: #94a3b8;
                 padding: 14px 28px;
                 margin-right: 6px;
                 border-top-left-radius: 12px;
@@ -83,15 +81,15 @@ class SettingsDialog(QDialog):
             }
             
             QTabBar::tab:selected {
-                background-color: rgba(255, 255, 255, 0.95);
-                color: #667eea;
+                background-color: rgba(30, 41, 59, 0.95);
+                color: #0ea5e9;
             }
             
             QTabBar::tab:hover:!selected {
-                background-color: rgba(255, 255, 255, 0.5);
+                background-color: rgba(51, 65, 85, 0.8);
+                color: #e2e8f0;
             }
             
-            /* 分组框 - 无边框卡片 */
             QGroupBox {
                 font-weight: bold;
                 font-size: 13px;
@@ -99,8 +97,8 @@ class SettingsDialog(QDialog):
                 border-radius: 12px;
                 margin-top: 22px;
                 padding: 22px 15px 15px 15px;
-                background-color: rgba(255, 255, 255, 0.9);
-                color: #2d3748;
+                background-color: rgba(30, 41, 59, 0.9);
+                color: #e2e8f0;
             }
             
             QGroupBox::title {
@@ -110,17 +108,16 @@ class SettingsDialog(QDialog):
                 top: 6px;
                 padding: 6px 16px;
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #667eea, stop:1 #764ba2);
+                    stop:0 #0ea5e9, stop:1 #06b6d4);
                 color: white;
                 font-size: 14px;
                 font-weight: bold;
                 border-radius: 8px;
             }
             
-            /* 按钮 */
             QPushButton {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #667eea, stop:1 #764ba2);
+                    stop:0 #0ea5e9, stop:1 #0284c7);
                 color: white;
                 border: none;
                 border-radius: 10px;
@@ -132,40 +129,39 @@ class SettingsDialog(QDialog):
             
             QPushButton:hover {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #5a67d8, stop:1 #6b46c1);
+                    stop:0 #38bdf8, stop:1 #0ea5e9);
             }
             
             QPushButton:pressed {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #4c51bf, stop:1 #553c9a);
+                    stop:0 #0284c7, stop:1 #0369a1);
             }
             
-            /* 输入框 */
             QLineEdit {
-                border: none;
+                border: 2px solid #334155;
                 border-radius: 10px;
                 padding: 10px 14px;
-                background-color: rgba(255, 255, 255, 0.9);
+                background-color: rgba(30, 41, 59, 0.9);
                 font-size: 12px;
-                color: #2d3748;
+                color: #e2e8f0;
             }
             
             QLineEdit:focus {
-                background-color: white;
+                background-color: #1e293b;
+                border-color: #0ea5e9;
             }
             
             QLineEdit::placeholder {
-                color: #a0aec0;
+                color: #64748b;
             }
             
-            /* 下拉框 */
             QComboBox {
-                border: none;
+                border: 2px solid #334155;
                 border-radius: 10px;
                 padding: 10px 14px;
-                background-color: rgba(255, 255, 255, 0.9);
+                background-color: rgba(30, 41, 59, 0.9);
                 font-size: 12px;
-                color: #2d3748;
+                color: #e2e8f0;
             }
             
             QComboBox::drop-down {
@@ -177,46 +173,46 @@ class SettingsDialog(QDialog):
                 image: none;
                 border-left: 5px solid transparent;
                 border-right: 5px solid transparent;
-                border-top: 7px solid #667eea;
+                border-top: 7px solid #0ea5e9;
                 margin-right: 10px;
             }
             
             QComboBox QAbstractItemView {
                 border: none;
                 border-radius: 10px;
-                background-color: white;
+                background-color: #1e293b;
                 padding: 5px;
-                selection-background-color: #667eea;
+                selection-background-color: #0ea5e9;
                 selection-color: white;
+                color: #e2e8f0;
             }
             
-            /* 表格 */
             QTableWidget {
-                background-color: rgba(255, 255, 255, 0.95);
+                background-color: rgba(30, 41, 59, 0.95);
                 border: none;
                 border-radius: 12px;
-                gridline-color: #edf2f7;
+                gridline-color: #334155;
                 font-size: 12px;
-                color: #2d3748;
+                color: #e2e8f0;
             }
             
             QTableWidget::item {
                 padding: 8px;
-                border-bottom: 1px solid #edf2f7;
+                border-bottom: 1px solid #334155;
             }
             
             QTableWidget::item:selected {
-                background-color: #667eea;
+                background-color: #0ea5e9;
                 color: white;
             }
             
             QTableWidget::item:hover {
-                background-color: #f7fafc;
+                background-color: #334155;
             }
             
             QHeaderView::section {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #667eea, stop:1 #764ba2);
+                    stop:0 #0ea5e9, stop:1 #0284c7);
                 color: white;
                 padding: 10px;
                 border: none;
@@ -224,14 +220,13 @@ class SettingsDialog(QDialog):
                 font-size: 11px;
             }
             
-            /* 列表 */
             QListWidget {
-                background-color: rgba(255, 255, 255, 0.95);
+                background-color: rgba(30, 41, 59, 0.95);
                 border: none;
                 border-radius: 12px;
                 padding: 8px;
                 font-size: 12px;
-                color: #2d3748;
+                color: #e2e8f0;
             }
             
             QListWidget::item {
@@ -241,54 +236,52 @@ class SettingsDialog(QDialog):
             }
             
             QListWidget::item:selected {
-                background-color: #667eea;
+                background-color: #0ea5e9;
                 color: white;
             }
             
             QListWidget::item:hover:!selected {
-                background-color: #f7fafc;
+                background-color: #334155;
             }
             
-            /* 文本编辑框 */
             QTextEdit {
-                background-color: rgba(255, 255, 255, 0.95);
-                border: none;
+                background-color: rgba(30, 41, 59, 0.95);
+                border: 2px solid #334155;
                 border-radius: 10px;
                 padding: 10px;
                 font-size: 12px;
-                color: #2d3748;
+                color: #e2e8f0;
             }
             
             QTextEdit:focus {
-                background-color: white;
+                background-color: #1e293b;
+                border-color: #0ea5e9;
             }
             
-            /* 复选框 */
             QCheckBox {
                 spacing: 10px;
                 font-size: 12px;
-                color: #2d3748;
+                color: #e2e8f0;
             }
             
             QCheckBox::indicator {
                 width: 20px;
                 height: 20px;
                 border-radius: 6px;
-                border: 2px solid #cbd5e0;
-                background-color: white;
+                border: 2px solid #475569;
+                background-color: #1e293b;
             }
             
             QCheckBox::indicator:hover {
-                border-color: #667eea;
+                border-color: #0ea5e9;
             }
             
             QCheckBox::indicator:checked {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #667eea, stop:1 #764ba2);
-                border-color: #667eea;
+                    stop:0 #0ea5e9, stop:1 #06b6d4);
+                border-color: #0ea5e9;
             }
             
-            /* 滚动条 */
             QScrollBar:vertical {
                 border: none;
                 background: transparent;
@@ -298,14 +291,14 @@ class SettingsDialog(QDialog):
             
             QScrollBar::handle:vertical {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #667eea, stop:1 #764ba2);
+                    stop:0 #0ea5e9, stop:1 #06b6d4);
                 border-radius: 6px;
                 min-height: 35px;
             }
             
             QScrollBar::handle:vertical:hover {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #5a67d8, stop:1 #6b46c1);
+                    stop:0 #38bdf8, stop:1 #0ea5e9);
             }
             
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
@@ -316,27 +309,51 @@ class SettingsDialog(QDialog):
                 background: transparent;
             }
             
-            /* 标签 */
             QLabel {
-                color: #4a5568;
+                color: #94a3b8;
                 font-size: 12px;
                 background: transparent;
             }
             
-            /* 数值输入框 */
             QSpinBox, QDoubleSpinBox {
-                border: none;
+                border: 2px solid #334155;
                 border-radius: 10px;
                 padding: 8px 12px;
-                background-color: rgba(255, 255, 255, 0.9);
+                background-color: rgba(30, 41, 59, 0.9);
                 font-size: 12px;
-                color: #2d3748;
+                color: #e2e8f0;
             }
             
             QSpinBox:focus, QDoubleSpinBox:focus {
-                background-color: white;
+                background-color: #1e293b;
+                border-color: #0ea5e9;
             }
         """)
+    
+    def _play_entrance_animation(self):
+        """播放对话框入场动画"""
+        self.setWindowOpacity(0)
+        
+        opacity_anim = QPropertyAnimation(self, b"windowOpacity")
+        opacity_anim.setDuration(300)
+        opacity_anim.setStartValue(0.0)
+        opacity_anim.setEndValue(1.0)
+        opacity_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        
+        geo = self.geometry()
+        slide_anim = QPropertyAnimation(self, b"geometry")
+        slide_anim.setDuration(400)
+        slide_anim.setStartValue(
+            geo.__class__(geo.x(), geo.y() + 20, geo.width(), geo.height())
+        )
+        slide_anim.setEndValue(geo)
+        slide_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        
+        group = QParallelAnimationGroup()
+        group.addAnimation(opacity_anim)
+        group.addAnimation(slide_anim)
+        group.start()
+        self._entrance_anim = group
     
     def _init_ui(self):
         """初始化用户界面"""
@@ -636,17 +653,17 @@ class SettingsDialog(QDialog):
                 width: 24px;
                 height: 24px;
                 border-radius: 6px;
-                border: 2px solid #667eea;
-                background-color: white;
+                border: 2px solid #475569;
+                background-color: #1e293b;
             }
             QCheckBox::indicator:checked {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #667eea, stop:1 #764ba2);
-                border-color: #667eea;
+                    stop:0 #0ea5e9, stop:1 #06b6d4);
+                border-color: #0ea5e9;
                 image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBvbHlsaW5lIHBvaW50cz0iMjAgNiA5IDE3IDQgMTIiPjwvcG9seWxpbmU+PC9zdmc+);
             }
             QCheckBox::indicator:hover {
-                border-color: #764ba2;
+                border-color: #0ea5e9;
             }
         """)
         
@@ -669,23 +686,23 @@ class SettingsDialog(QDialog):
                     font-size: 13px;
                     font-weight: bold;
                     spacing: 8px;
-                    color: #2d3748;
+                    color: #e2e8f0;
                 }
                 QCheckBox::indicator {
                     width: 20px;
                     height: 20px;
                     border-radius: 5px;
-                    border: 2px solid #667eea;
-                    background-color: white;
+                    border: 2px solid #475569;
+                    background-color: #1e293b;
                 }
                 QCheckBox::indicator:checked {
                     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 #667eea, stop:1 #764ba2);
-                    border-color: #667eea;
+                        stop:0 #0ea5e9, stop:1 #06b6d4);
+                    border-color: #0ea5e9;
                     image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBvbHlsaW5lIHBvaW50cz0iMjAgNiA5IDE3IDQgMTIiPjwvcG9seWxpbmU+PC9zdmc+);
                 }
                 QCheckBox::indicator:hover {
-                    border-color: #764ba2;
+                    border-color: #0ea5e9;
                 }
             """)
             self.method_checkboxes[method] = checkbox
@@ -720,6 +737,64 @@ class SettingsDialog(QDialog):
         
         layout.addWidget(safe_mode_group)
         layout.addWidget(methods_group)
+        
+        detector_group = ModernGroupBox("🔍 安全检测器")
+        detector_layout = QVBoxLayout()
+        detector_layout.setSpacing(12)
+        
+        detector_cb_style = """
+            QCheckBox {
+                font-size: 13px;
+                font-weight: bold;
+                spacing: 10px;
+                color: #e2e8f0;
+            }
+            QCheckBox::indicator {
+                width: 22px;
+                height: 22px;
+                border-radius: 6px;
+                border: 2px solid #475569;
+                background-color: #1e293b;
+            }
+            QCheckBox::indicator:checked {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #0ea5e9, stop:1 #06b6d4);
+                border-color: #0ea5e9;
+                image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBvbHlsaW5lIHBvaW50cz0iMjAgNiA5IDE3IDQgMTIiPjwvcG9seWxpbmU+PC9zdmc+);
+            }
+            QCheckBox::indicator:hover {
+                border-color: #0ea5e9;
+            }
+        """
+        
+        self.sensitive_detection_cb = QCheckBox("🔐 敏感信息检测（默认启用）")
+        self.sensitive_detection_cb.setChecked(self.settings.get("enable_sensitive_detection", True))
+        self.sensitive_detection_cb.setStyleSheet(detector_cb_style)
+        
+        self.jwt_detection_cb = QCheckBox("🎫 JWT 安全检测（默认启用）")
+        self.jwt_detection_cb.setChecked(self.settings.get("enable_jwt_detection", True))
+        self.jwt_detection_cb.setStyleSheet(detector_cb_style)
+        
+        self.idor_detection_cb = QCheckBox("🎭 IDOR 漏洞检测")
+        self.idor_detection_cb.setChecked(self.settings.get("enable_idor_detection", False))
+        self.idor_detection_cb.setStyleSheet(detector_cb_style)
+        
+        self.auth_bypass_detection_cb = QCheckBox("🔓 认证绕过检测")
+        self.auth_bypass_detection_cb.setChecked(self.settings.get("enable_auth_bypass_detection", False))
+        self.auth_bypass_detection_cb.setStyleSheet(detector_cb_style)
+        
+        self.upload_detection_cb = QCheckBox("📤 上传漏洞检测")
+        self.upload_detection_cb.setChecked(self.settings.get("enable_upload_detection", False))
+        self.upload_detection_cb.setStyleSheet(detector_cb_style)
+        
+        detector_layout.addWidget(self.sensitive_detection_cb)
+        detector_layout.addWidget(self.jwt_detection_cb)
+        detector_layout.addWidget(self.idor_detection_cb)
+        detector_layout.addWidget(self.auth_bypass_detection_cb)
+        detector_layout.addWidget(self.upload_detection_cb)
+        detector_group.setLayout(detector_layout)
+        
+        layout.addWidget(detector_group)
         layout.addWidget(keywords_group)
         layout.addWidget(blacklist_group)
         
@@ -740,18 +815,18 @@ class SettingsDialog(QDialog):
         disclaimer_text.setReadOnly(True)
         disclaimer_text.setStyleSheet("""
             QTextEdit {
-                background-color: #f7fafc;
-                border: 2px solid #e2e8f0;
+                background-color: #1e293b;
+                border: 2px solid #334155;
                 border-radius: 8px;
                 padding: 15px;
                 font-size: 13px;
                 line-height: 1.6;
-                color: #2d3748;
+                color: #e2e8f0;
             }
         """)
         
         disclaimer_content = """
-<h2 style="color: #2d3748; text-align: center; margin-bottom: 20px;">
+<h2 style="color: #e2e8f0; text-align: center; margin-bottom: 20px;">
     ⚠️ 重要声明 - 请仔细阅读
 </h2>
 
@@ -809,8 +884,8 @@ class SettingsDialog(QDialog):
     如有疑问或建议，请联系：<strong>bluechipszhao@163.com</strong>
 </p>
 
-<div style="background-color: #fed7d7; padding: 15px; border-radius: 8px; margin-top: 20px; border-left: 4px solid #e53e3e;">
-    <p style="margin: 0; color: #c53030; font-weight: bold; text-align: center;">
+<div style="background-color: #7f1d1d; padding: 15px; border-radius: 8px; margin-top: 20px; border-left: 4px solid #ef4444;">
+    <p style="margin: 0; color: #fca5a5; font-weight: bold; text-align: center;">
         ⚠️ 使用本工具即表示您已阅读、理解并同意遵守以上声明。<br>
         如不同意，请立即停止使用本工具。
     </p>
@@ -831,23 +906,23 @@ class SettingsDialog(QDialog):
                 font-size: 14px;
                 font-weight: bold;
                 spacing: 10px;
-                color: #2d3748;
+                color: #e2e8f0;
             }
             QCheckBox::indicator {
                 width: 24px;
                 height: 24px;
                 border-radius: 6px;
-                border: 2px solid #667eea;
-                background-color: white;
+                border: 2px solid #475569;
+                background-color: #1e293b;
             }
             QCheckBox::indicator:checked {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #667eea, stop:1 #764ba2);
-                border-color: #667eea;
+                    stop:0 #0ea5e9, stop:1 #06b6d4);
+                border-color: #0ea5e9;
                 image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBvbHlsaW5lIHBvaW50cz0iMjAgNiA5IDE3IDQgMTIiPjwvcG9seWxpbmU+PC9zdmc+);
             }
             QCheckBox::indicator:hover {
-                border-color: #764ba2;
+                border-color: #0ea5e9;
             }
         """)
         
@@ -1156,6 +1231,13 @@ class SettingsDialog(QDialog):
                 blocked_methods.append(method)
         self.settings["blocked_methods"] = blocked_methods
         
+        if hasattr(self, 'sensitive_detection_cb'):
+            self.settings["enable_sensitive_detection"] = self.sensitive_detection_cb.isChecked()
+            self.settings["enable_jwt_detection"] = self.jwt_detection_cb.isChecked()
+            self.settings["enable_idor_detection"] = self.idor_detection_cb.isChecked()
+            self.settings["enable_auth_bypass_detection"] = self.auth_bypass_detection_cb.isChecked()
+            self.settings["enable_upload_detection"] = self.upload_detection_cb.isChecked()
+        
         keywords = [line.strip() for line in self.keywords_text.toPlainText().split('\n') if line.strip()]
         self.settings["dangerous_keywords"] = keywords
         
@@ -1188,7 +1270,12 @@ class SettingsDialog(QDialog):
                 "blocked_methods": ["DELETE", "PUT"],
                 "dangerous_keywords": ["delete", "remove", "drop", "truncate", "destroy", "clear", "purge"],
                 "blacklist": [],
-                "custom_headers": {}
+                "custom_headers": {},
+                "enable_sensitive_detection": True,
+                "enable_jwt_detection": True,
+                "enable_idor_detection": False,
+                "enable_auth_bypass_detection": False,
+                "enable_upload_detection": False
             }
             self._populate_rules_table()
             self._populate_headers_table()
@@ -1197,6 +1284,13 @@ class SettingsDialog(QDialog):
             self.safe_mode_checkbox.setChecked(True)
             for method, checkbox in self.method_checkboxes.items():
                 checkbox.setChecked(method in ["DELETE", "PUT"])
+            
+            if hasattr(self, 'sensitive_detection_cb'):
+                self.sensitive_detection_cb.setChecked(True)
+                self.jwt_detection_cb.setChecked(True)
+                self.idor_detection_cb.setChecked(False)
+                self.auth_bypass_detection_cb.setChecked(False)
+                self.upload_detection_cb.setChecked(False)
             
             self.keywords_text.setText("\n".join(["delete", "remove", "drop", "truncate", "destroy", "clear", "purge"]))
             self.blacklist_text.clear()
