@@ -5,7 +5,7 @@
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from copy import deepcopy
 
 import requests
@@ -40,6 +40,150 @@ class AuthBypassDetector:
         self.http_client = http_client or HttpClient()
         logger.info("AuthBypassDetector 初始化完成")
     
+    def _execute_bypass_tests(
+        self,
+        test_type: str,
+        test_type_label: str,
+        endpoint: APIEndpoint,
+        http_client: HttpClient,
+        test_cases: List[Dict[str, Any]],
+        apply_modification: Callable[
+            [APIEndpoint, Dict[str, Any], Dict[str, Any]],
+            Tuple[APIEndpoint, Dict[str, str], Optional[str]]
+        ],
+        original_headers: Optional[Dict[str, str]] = None,
+        original_response: Optional[requests.Response] = None
+    ) -> List[Dict]:
+        """
+        执行绕过测试的模板方法
+        
+        封装完整的测试执行流程：获取原始响应、遍历测试用例、
+        应用修改、发送请求、分析结果、构建结果字典、异常处理、日志记录。
+        
+        Args:
+            test_type: 测试类型标识（如 "token_bypass"）
+            test_type_label: 测试类型中文标签（如 "Token 绕过"）
+            endpoint: API 接口对象
+            http_client: HTTP 客户端实例
+            test_cases: 测试用例列表，每个用例需包含 name 和 description
+            apply_modification: 应用修改的函数，接收 (endpoint, original_headers, test_case)，
+                返回 (modified_endpoint, modified_headers, modified_method)
+            original_headers: 用于获取原始响应的请求头（默认使用 endpoint.headers）
+            original_response: 可选的预获取原始响应（传入后跳过原始响应获取，用于复用）
+            
+        Returns:
+            测试结果列表
+        """
+        logger.info(f"开始 {test_type_label} 测试: {endpoint.method} {endpoint.path}")
+        
+        results = []
+        request_headers = original_headers or endpoint.headers
+        
+        try:
+            if original_response is None:
+                original_response = self._send_request(endpoint, http_client, request_headers)
+            
+            for test_case in test_cases:
+                try:
+                    modified_endpoint, modified_headers, modified_method = apply_modification(
+                        endpoint, request_headers, test_case
+                    )
+                    
+                    test_response = self._send_request(
+                        modified_endpoint, http_client, modified_headers
+                    )
+                    
+                    analysis = self.analyze_bypass(original_response, test_response)
+                    
+                    result = self._build_success_result(
+                        test_type, test_case, endpoint,
+                        original_response, test_response, analysis,
+                        modified_headers, modified_method
+                    )
+                    results.append(result)
+                    
+                    if analysis["bypass_success"]:
+                        self._log_bypass_found(
+                            test_type_label, test_case["name"],
+                            original_response, test_response
+                        )
+                
+                except Exception as e:
+                    logger.error(f"{test_type_label} 测试失败 [{test_case['name']}]: {e}")
+                    results.append(
+                        self._build_error_result(test_type, test_case, endpoint, str(e))
+                    )
+        
+        except Exception as e:
+            logger.error(f"获取原始响应失败: {e}")
+            return []
+        
+        logger.info(f"{test_type_label} 测试完成，共 {len(results)} 个测试")
+        return results
+    
+    def _build_success_result(
+        self,
+        test_type: str,
+        test_case: Dict[str, Any],
+        endpoint: APIEndpoint,
+        original_response: Optional[requests.Response],
+        test_response: Optional[requests.Response],
+        analysis: Dict[str, Any],
+        modified_headers: Dict[str, str],
+        modified_method: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """构建成功的测试结果字典"""
+        result = {
+            "test_type": test_type,
+            "test_name": test_case["name"],
+            "description": test_case["description"],
+            "endpoint": f"{endpoint.method} {endpoint.path}",
+            "original_status": original_response.status_code if original_response else None,
+            "test_status": test_response.status_code if test_response else None,
+            "bypass_success": analysis["bypass_success"],
+            "risk_level": analysis["risk_level"],
+            "details": analysis["details"],
+        }
+        
+        if modified_method is not None:
+            result["modified_method"] = modified_method
+        else:
+            result["modified_headers"] = modified_headers
+        
+        return result
+    
+    def _build_error_result(
+        self,
+        test_type: str,
+        test_case: Dict[str, Any],
+        endpoint: APIEndpoint,
+        error_msg: str
+    ) -> Dict[str, Any]:
+        """构建错误的测试结果字典"""
+        return {
+            "test_type": test_type,
+            "test_name": test_case["name"],
+            "description": test_case["description"],
+            "endpoint": f"{endpoint.method} {endpoint.path}",
+            "error": error_msg,
+            "bypass_success": False,
+            "risk_level": "Unknown"
+        }
+    
+    def _log_bypass_found(
+        self,
+        test_type_label: str,
+        test_name: str,
+        original_response: Optional[requests.Response],
+        test_response: Optional[requests.Response]
+    ) -> None:
+        """记录发现绕过漏洞的警告日志"""
+        logger.warning(
+            f"发现 {test_type_label} 漏洞: {test_name} - "
+            f"状态码 {original_response.status_code if original_response else 'N/A'} -> "
+            f"{test_response.status_code if test_response else 'N/A'}"
+        )
+    
     def test_token_bypass(self, endpoint: APIEndpoint, http_client: HttpClient) -> List[Dict]:
         """
         测试 Token 绕过
@@ -58,9 +202,6 @@ class AuthBypassDetector:
         Returns:
             绕过测试结果列表
         """
-        logger.info(f"开始 Token 绕过测试: {endpoint.method} {endpoint.path}")
-        
-        results = []
         original_headers = deepcopy(endpoint.headers)
         
         test_cases = [
@@ -96,57 +237,23 @@ class AuthBypassDetector:
             },
         ]
         
-        try:
-            original_response = self._send_request(endpoint, http_client, original_headers)
-            
-            for test_case in test_cases:
-                try:
-                    modified_headers = test_case["headers_modifier"](deepcopy(original_headers))
-                    
-                    test_response = self._send_request(endpoint, http_client, modified_headers)
-                    
-                    analysis = self.analyze_bypass(original_response, test_response)
-                    
-                    result = {
-                        "test_type": "token_bypass",
-                        "test_name": test_case["name"],
-                        "description": test_case["description"],
-                        "endpoint": f"{endpoint.method} {endpoint.path}",
-                        "original_status": original_response.status_code if original_response else None,
-                        "test_status": test_response.status_code if test_response else None,
-                        "bypass_success": analysis["bypass_success"],
-                        "risk_level": analysis["risk_level"],
-                        "details": analysis["details"],
-                        "modified_headers": modified_headers
-                    }
-                    
-                    results.append(result)
-                    
-                    if analysis["bypass_success"]:
-                        logger.warning(
-                            f"发现 Token 绕过漏洞: {test_case['name']} - "
-                            f"状态码 {original_response.status_code if original_response else 'N/A'} -> "
-                            f"{test_response.status_code if test_response else 'N/A'}"
-                        )
-                    
-                except Exception as e:
-                    logger.error(f"Token 绕过测试失败 [{test_case['name']}]: {e}")
-                    results.append({
-                        "test_type": "token_bypass",
-                        "test_name": test_case["name"],
-                        "description": test_case["description"],
-                        "endpoint": f"{endpoint.method} {endpoint.path}",
-                        "error": str(e),
-                        "bypass_success": False,
-                        "risk_level": "Unknown"
-                    })
+        def apply_token_modification(
+            ep: APIEndpoint,
+            orig_headers: Dict[str, str],
+            case: Dict[str, Any]
+        ) -> Tuple[APIEndpoint, Dict[str, str], None]:
+            modified_headers = case["headers_modifier"](deepcopy(orig_headers))
+            return ep, modified_headers, None
         
-        except Exception as e:
-            logger.error(f"获取原始响应失败: {e}")
-            return []
-        
-        logger.info(f"Token 绕过测试完成，共 {len(results)} 个测试")
-        return results
+        return self._execute_bypass_tests(
+            test_type="token_bypass",
+            test_type_label="Token 绕过",
+            endpoint=endpoint,
+            http_client=http_client,
+            test_cases=test_cases,
+            apply_modification=apply_token_modification,
+            original_headers=original_headers
+        )
     
     def test_method_bypass(self, endpoint: APIEndpoint, http_client: HttpClient) -> List[Dict]:
         """
@@ -166,9 +273,6 @@ class AuthBypassDetector:
         Returns:
             绕过测试结果列表
         """
-        logger.info(f"开始 HTTP 方法绕过测试: {endpoint.method} {endpoint.path}")
-        
-        results = []
         original_method = endpoint.method.upper()
         
         method_mappings = {
@@ -181,100 +285,69 @@ class AuthBypassDetector:
         
         alternative_methods = method_mappings.get(original_method, ["GET", "POST"])
         
+        method_replacement_cases = [
+            {
+                "name": f"{original_method}_to_{alt}",
+                "description": f"方法替换: {original_method} -> {alt}",
+                "alt_method": alt
+            }
+            for alt in alternative_methods
+        ]
+        
+        method_override_cases = [
+            {
+                "name": f"override_to_{alt}",
+                "description": f"X-HTTP-Method-Override: {alt}",
+                "override_method": alt
+            }
+            for alt in alternative_methods
+        ]
+        
+        def apply_method_replacement(
+            ep: APIEndpoint,
+            orig_headers: Dict[str, str],
+            case: Dict[str, Any]
+        ) -> Tuple[APIEndpoint, Dict[str, str], str]:
+            modified_ep = deepcopy(ep)
+            modified_ep.method = case["alt_method"]
+            return modified_ep, modified_ep.headers, case["alt_method"]
+        
+        def apply_method_override(
+            ep: APIEndpoint,
+            orig_headers: Dict[str, str],
+            case: Dict[str, Any]
+        ) -> Tuple[APIEndpoint, Dict[str, str], None]:
+            modified_headers = deepcopy(ep.headers)
+            modified_headers["X-HTTP-Method-Override"] = case["override_method"]
+            return ep, modified_headers, None
+        
         try:
             original_response = self._send_request(endpoint, http_client, endpoint.headers)
-            
-            for alt_method in alternative_methods:
-                try:
-                    modified_endpoint = deepcopy(endpoint)
-                    modified_endpoint.method = alt_method
-                    
-                    test_response = self._send_request(modified_endpoint, http_client, modified_endpoint.headers)
-                    
-                    analysis = self.analyze_bypass(original_response, test_response)
-                    
-                    result = {
-                        "test_type": "method_bypass",
-                        "test_name": f"{original_method}_to_{alt_method}",
-                        "description": f"方法替换: {original_method} -> {alt_method}",
-                        "endpoint": f"{endpoint.method} {endpoint.path}",
-                        "original_status": original_response.status_code if original_response else None,
-                        "test_status": test_response.status_code if test_response else None,
-                        "bypass_success": analysis["bypass_success"],
-                        "risk_level": analysis["risk_level"],
-                        "details": analysis["details"],
-                        "modified_method": alt_method
-                    }
-                    
-                    results.append(result)
-                    
-                    if analysis["bypass_success"]:
-                        logger.warning(
-                            f"发现方法绕过漏洞: {original_method} -> {alt_method} - "
-                            f"状态码 {original_response.status_code if original_response else 'N/A'} -> "
-                            f"{test_response.status_code if test_response else 'N/A'}"
-                        )
-                
-                except Exception as e:
-                    logger.error(f"方法绕过测试失败 [{original_method} -> {alt_method}]: {e}")
-                    results.append({
-                        "test_type": "method_bypass",
-                        "test_name": f"{original_method}_to_{alt_method}",
-                        "description": f"方法替换: {original_method} -> {alt_method}",
-                        "endpoint": f"{endpoint.method} {endpoint.path}",
-                        "error": str(e),
-                        "bypass_success": False,
-                        "risk_level": "Unknown"
-                    })
-            
-            for override_method in alternative_methods:
-                try:
-                    modified_headers = deepcopy(endpoint.headers)
-                    modified_headers["X-HTTP-Method-Override"] = override_method
-                    
-                    test_response = self._send_request(endpoint, http_client, modified_headers)
-                    
-                    analysis = self.analyze_bypass(original_response, test_response)
-                    
-                    result = {
-                        "test_type": "method_bypass",
-                        "test_name": f"override_to_{override_method}",
-                        "description": f"X-HTTP-Method-Override: {override_method}",
-                        "endpoint": f"{endpoint.method} {endpoint.path}",
-                        "original_status": original_response.status_code if original_response else None,
-                        "test_status": test_response.status_code if test_response else None,
-                        "bypass_success": analysis["bypass_success"],
-                        "risk_level": analysis["risk_level"],
-                        "details": analysis["details"],
-                        "modified_headers": {"X-HTTP-Method-Override": override_method}
-                    }
-                    
-                    results.append(result)
-                    
-                    if analysis["bypass_success"]:
-                        logger.warning(
-                            f"发现方法覆盖绕过漏洞: X-HTTP-Method-Override: {override_method} - "
-                            f"状态码 {original_response.status_code if original_response else 'N/A'} -> "
-                            f"{test_response.status_code if test_response else 'N/A'}"
-                        )
-                
-                except Exception as e:
-                    logger.error(f"方法覆盖测试失败 [X-HTTP-Method-Override: {override_method}]: {e}")
-                    results.append({
-                        "test_type": "method_bypass",
-                        "test_name": f"override_to_{override_method}",
-                        "description": f"X-HTTP-Method-Override: {override_method}",
-                        "endpoint": f"{endpoint.method} {endpoint.path}",
-                        "error": str(e),
-                        "bypass_success": False,
-                        "risk_level": "Unknown"
-                    })
-        
         except Exception as e:
             logger.error(f"获取原始响应失败: {e}")
             return []
         
-        logger.info(f"HTTP 方法绕过测试完成，共 {len(results)} 个测试")
+        results = self._execute_bypass_tests(
+            test_type="method_bypass",
+            test_type_label="方法绕过",
+            endpoint=endpoint,
+            http_client=http_client,
+            test_cases=method_replacement_cases,
+            apply_modification=apply_method_replacement,
+            original_response=original_response
+        )
+        
+        override_results = self._execute_bypass_tests(
+            test_type="method_bypass",
+            test_type_label="方法覆盖绕过",
+            endpoint=endpoint,
+            http_client=http_client,
+            test_cases=method_override_cases,
+            apply_modification=apply_method_override,
+            original_response=original_response
+        )
+        
+        results.extend(override_results)
         return results
     
     def test_header_bypass(self, endpoint: APIEndpoint, http_client: HttpClient) -> List[Dict]:
@@ -295,9 +368,6 @@ class AuthBypassDetector:
         Returns:
             绕过测试结果列表
         """
-        logger.info(f"开始请求头绕过测试: {endpoint.method} {endpoint.path}")
-        
-        results = []
         original_headers = deepcopy(endpoint.headers)
         
         test_cases = [
@@ -373,58 +443,24 @@ class AuthBypassDetector:
             },
         ]
         
-        try:
-            original_response = self._send_request(endpoint, http_client, original_headers)
-            
-            for test_case in test_cases:
-                try:
-                    modified_headers = deepcopy(original_headers)
-                    modified_headers.update(test_case["headers"])
-                    
-                    test_response = self._send_request(endpoint, http_client, modified_headers)
-                    
-                    analysis = self.analyze_bypass(original_response, test_response)
-                    
-                    result = {
-                        "test_type": "header_bypass",
-                        "test_name": test_case["name"],
-                        "description": test_case["description"],
-                        "endpoint": f"{endpoint.method} {endpoint.path}",
-                        "original_status": original_response.status_code if original_response else None,
-                        "test_status": test_response.status_code if test_response else None,
-                        "bypass_success": analysis["bypass_success"],
-                        "risk_level": analysis["risk_level"],
-                        "details": analysis["details"],
-                        "modified_headers": test_case["headers"]
-                    }
-                    
-                    results.append(result)
-                    
-                    if analysis["bypass_success"]:
-                        logger.warning(
-                            f"发现请求头绕过漏洞: {test_case['name']} - "
-                            f"状态码 {original_response.status_code if original_response else 'N/A'} -> "
-                            f"{test_response.status_code if test_response else 'N/A'}"
-                        )
-                
-                except Exception as e:
-                    logger.error(f"请求头绕过测试失败 [{test_case['name']}]: {e}")
-                    results.append({
-                        "test_type": "header_bypass",
-                        "test_name": test_case["name"],
-                        "description": test_case["description"],
-                        "endpoint": f"{endpoint.method} {endpoint.path}",
-                        "error": str(e),
-                        "bypass_success": False,
-                        "risk_level": "Unknown"
-                    })
+        def apply_header_modification(
+            ep: APIEndpoint,
+            orig_headers: Dict[str, str],
+            case: Dict[str, Any]
+        ) -> Tuple[APIEndpoint, Dict[str, str], None]:
+            modified_headers = deepcopy(orig_headers)
+            modified_headers.update(case["headers"])
+            return ep, modified_headers, None
         
-        except Exception as e:
-            logger.error(f"获取原始响应失败: {e}")
-            return []
-        
-        logger.info(f"请求头绕过测试完成，共 {len(results)} 个测试")
-        return results
+        return self._execute_bypass_tests(
+            test_type="header_bypass",
+            test_type_label="请求头绕过",
+            endpoint=endpoint,
+            http_client=http_client,
+            test_cases=test_cases,
+            apply_modification=apply_header_modification,
+            original_headers=original_headers
+        )
     
     def analyze_bypass(
         self,

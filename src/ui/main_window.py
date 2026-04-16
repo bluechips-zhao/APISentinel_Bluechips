@@ -1,7 +1,7 @@
 """
 APISentinel_Bluechips - API 安全扫描器主窗口
 Author: bluechips
-Version: 1.0.0
+Version: 1.1.0
 
 专为渗透测试人员打造的 API 接口自动化安全检测工具
 """
@@ -25,7 +25,7 @@ from src.core.http_client import HttpClient
 
 APP_NAME = "APISentinel_Bluechips"
 APP_AUTHOR = "bluechips"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.1.0"
 
 
 class ModernButton(QPushButton):
@@ -143,6 +143,31 @@ class TestWorker(QThread):
     
     def stop(self):
         self._is_stopped = True
+
+
+class _DiscoverWorker(QThread):
+    """API 自动发现工作线程"""
+    progress_ready = pyqtSignal(str, int)
+    finished_ready = pyqtSignal(list)
+    
+    def __init__(self, target_url, strategies=None, timeout=15):
+        super().__init__()
+        self.target_url = target_url
+        self.strategies = strategies
+        self.timeout = timeout
+    
+    def run(self):
+        try:
+            from src.parsers import APIDiscoverer
+            with APIDiscoverer(timeout=self.timeout) as discoverer:
+                discoverer.set_progress_callback(
+                    lambda msg, pct: self.progress_ready.emit(msg, pct)
+                )
+                endpoints = discoverer.discover(self.target_url, self.strategies)
+                self.finished_ready.emit(endpoints)
+        except Exception as e:
+            self.progress_ready.emit(f"❌ 发现失败: {e}", 0)
+            self.finished_ready.emit([])
 
 
 class MainWindow(QMainWindow):
@@ -694,13 +719,13 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(20, 30, 20, 20)
         
         type_label = QLabel("文档类型:")
-        type_label.setStyleSheet("font-weight: bold; color: #4a5568;")
+        type_label.setStyleSheet("font-weight: bold; color: #94a3b8;")
         
         self.type_combo = QComboBox()
-        self.type_combo.addItems(["Swagger/OpenAPI", "ASP.NET Help Page"])
+        self.type_combo.addItems(["Swagger/OpenAPI", "ASP.NET Help Page", "🔍 API 自动发现"])
         
         url_label = QLabel("URL:")
-        url_label.setStyleSheet("font-weight: bold; color: #4a5568;")
+        url_label.setStyleSheet("font-weight: bold; color: #94a3b8;")
         
         self.url_input = QLineEdit()
         self.url_input.setPlaceholderText("输入 URL 或 JSON 文件路径...")
@@ -729,6 +754,18 @@ class MainWindow(QMainWindow):
             }
         """)
         
+        self.discover_button = QPushButton("🔍 发现 API")
+        self.discover_button.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #f6ad55, stop:1 #dd6b20);
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #dd6b20, stop:1 #c05621);
+            }
+        """)
+        
         self.import_progress = QProgressBar()
         self.import_progress.setVisible(False)
         self.import_progress.setFixedWidth(180)
@@ -738,6 +775,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(url_label)
         layout.addWidget(self.url_input, 1)
         layout.addWidget(self.file_button)
+        layout.addWidget(self.discover_button)
         layout.addWidget(self.import_button)
         layout.addWidget(self.import_progress)
         
@@ -844,6 +882,7 @@ class MainWindow(QMainWindow):
     def _init_signals(self):
         """初始化信号连接"""
         self.import_button.clicked.connect(self._on_import)
+        self.discover_button.clicked.connect(self._on_discover)
         self.file_button.clicked.connect(self._on_browse_file)
         
         self.start_action.triggered.connect(self._on_start_test)
@@ -864,6 +903,10 @@ class MainWindow(QMainWindow):
         
         if not url:
             QMessageBox.warning(self, "⚠️ 提示", "请输入 URL 或文件路径")
+            return
+        
+        if "自动发现" in doc_type:
+            self._on_discover()
             return
         
         self.import_progress.setVisible(True)
@@ -889,6 +932,74 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("❌ 导入失败")
         finally:
             self.import_progress.setVisible(False)
+    
+    def _on_discover(self):
+        """处理 API 自动发现按钮点击"""
+        url = self.url_input.text().strip()
+        if not url:
+            QMessageBox.warning(self, "⚠️ 提示", "请输入目标 URL 进行 API 发现")
+            return
+        
+        strategies, ok = QInputDialog.getItem(
+            self, "🔍 API 自动发现",
+            "选择发现策略:",
+            ["全部策略", "仅爬取", "仅探测", "仅 JS 分析", "仅 Sitemap", "仅响应头"],
+            0, False
+        )
+        if not ok:
+            return
+        
+        strategy_map = {
+            "全部策略": None,
+            "仅爬取": ["crawl"],
+            "仅探测": ["probe"],
+            "仅 JS 分析": ["js"],
+            "仅 Sitemap": ["sitemap"],
+            "仅响应头": ["headers"],
+        }
+        
+        self.import_progress.setVisible(True)
+        self.import_progress.setValue(0)
+        self.status_bar.showMessage(f"🔍 正在发现 API: {url}...")
+        
+        from src.parsers import APIDiscoverer
+        
+        self._discover_worker = _DiscoverWorker(
+            url, strategy_map.get(strategies), timeout=15
+        )
+        self._discover_worker.progress_ready.connect(self._on_discover_progress)
+        self._discover_worker.finished_ready.connect(self._on_discover_finished)
+        self._discover_worker.start()
+    
+    def _on_discover_progress(self, message, progress):
+        """发现进度更新"""
+        self.status_bar.showMessage(message)
+        self.import_progress.setValue(progress)
+    
+    def _on_discover_finished(self, endpoints):
+        """发现完成"""
+        self.import_progress.setVisible(False)
+        
+        if endpoints:
+            self.endpoints = endpoints
+            self._populate_interface_table()
+            self.status_bar.showMessage(f"✅ API 发现完成: 找到 {len(endpoints)} 个接口")
+            QMessageBox.information(
+                self, "🔍 发现完成",
+                f"API 自动发现完成！\n\n"
+                f"发现接口数量: {len(endpoints)}\n\n"
+                f"请在接口列表中查看并选择要测试的接口。"
+            )
+        else:
+            self.status_bar.showMessage("⚠️ 未发现 API 接口")
+            QMessageBox.information(
+                self, "🔍 发现结果",
+                "未发现 API 接口。\n\n"
+                "建议：\n"
+                "1. 确认目标 URL 正确\n"
+                "2. 尝试使用「全部策略」\n"
+                "3. 检查目标是否可访问"
+            )
     
     def _animate_progress(self):
         """进度条动画"""
