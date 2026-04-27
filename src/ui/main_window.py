@@ -1,7 +1,7 @@
 """
 APISentinel_Bluechips - API 安全扫描器主窗口
 Author: bluechips
-Version: 1.1.0
+Version: 1.0.0
 
 专为渗透测试人员打造的 API 接口自动化安全检测工具
 """
@@ -25,7 +25,7 @@ from src.core.http_client import HttpClient
 
 APP_NAME = "APISentinel_Bluechips"
 APP_AUTHOR = "bluechips"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.0.1"
 
 
 class ModernButton(QPushButton):
@@ -168,6 +168,46 @@ class _DiscoverWorker(QThread):
         except Exception as e:
             self.progress_ready.emit(f"❌ 发现失败: {e}", 0)
             self.finished_ready.emit([])
+
+
+class _FuzzWorker(QThread):
+    """Fuzzer 工作线程"""
+    progress = pyqtSignal(int, int)
+    result_ready = pyqtSignal(object)
+    finished_all = pyqtSignal(list)
+    error_occurred = pyqtSignal(str)
+    
+    def __init__(self, fuzzer, endpoints, http_client, category=None):
+        super().__init__()
+        self.fuzzer = fuzzer
+        self.endpoints = endpoints
+        self.http_client = http_client
+        self.category = category
+        self._is_stopped = False
+    
+    def run(self):
+        all_results = []
+        total = len(self.endpoints)
+        
+        for i, endpoint in enumerate(self.endpoints):
+            if self._is_stopped:
+                break
+            try:
+                results = self.fuzzer.test_endpoint(
+                    endpoint, self.http_client,
+                    category=self.category
+                )
+                for result in results:
+                    all_results.append(result)
+                    self.result_ready.emit(result)
+            except Exception as e:
+                self.error_occurred.emit(f"Fuzz {endpoint.method} {endpoint.path}: {str(e)}")
+            self.progress.emit(i + 1, total)
+        
+        self.finished_all.emit(all_results)
+    
+    def stop(self):
+        self._is_stopped = True
 
 
 class MainWindow(QMainWindow):
@@ -1069,9 +1109,26 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "⚠️ 提示", "请至少选择一个接口")
             return
         
+        if self.safe_mode.is_safe_mode_enabled():
+            original_count = len(selected_endpoints)
+            selected_endpoints = self.safe_mode.filter_endpoints(selected_endpoints)
+            filtered_count = original_count - len(selected_endpoints)
+            if filtered_count > 0:
+                self.status_bar.showMessage(
+                    f"🛡️ 安全模式过滤: 移除 {filtered_count} 个不安全接口，"
+                    f"保留 {len(selected_endpoints)} 个"
+                )
+            if not selected_endpoints:
+                QMessageBox.warning(
+                    self, "⚠️ 安全模式",
+                    "所有选中接口均被安全模式过滤，请调整安全设置或选择其他接口"
+                )
+                return
+        
         proxy = self.proxy_input.text().strip()
         if proxy:
             self.http_client.set_proxy(proxy)
+            self.test_executor.set_proxy(proxy)
         
         status_codes = self.status_input.text().strip()
         if status_codes:
@@ -1113,9 +1170,16 @@ class MainWindow(QMainWindow):
     
     def _on_stop_test(self):
         """处理停止测试按钮点击"""
+        stopped = False
         if hasattr(self, '_test_worker') and self._test_worker.isRunning():
             self._test_worker.stop()
             self._test_worker.wait(3000)
+            stopped = True
+        if hasattr(self, '_fuzz_worker') and self._fuzz_worker.isRunning():
+            self._fuzz_worker.stop()
+            self._fuzz_worker.wait(3000)
+            stopped = True
+        if stopped:
             self.status_bar.showMessage("⏹ 测试已停止")
         else:
             self.status_bar.showMessage("⏹ 没有正在运行的测试")
@@ -1218,24 +1282,28 @@ class MainWindow(QMainWindow):
         if not ok:
             return
         
+        proxy = self.proxy_input.text().strip()
+        if proxy:
+            fuzzer.set_proxy(proxy)
+        
+        category = None if categories == "all" else categories
+        
         self.test_results = []
         self.results_table.setRowCount(0)
         self.status_bar.showMessage(f"🎯 正在 Fuzzing {len(selected_endpoints)} 个接口...")
         
-        self._fuzz_worker = TestWorker(self.test_executor, selected_endpoints)
-        
-        def run_fuzz():
-            fuzz_results = []
-            for endpoint in selected_endpoints:
-                try:
-                    results = fuzzer.test_endpoint(endpoint, self.http_client, categories=[categories] if categories != "all" else None)
-                    fuzz_results.extend(results)
-                except Exception as e:
-                    pass
-            return fuzz_results
-        
-        self._fuzz_worker.finished_all.connect(lambda results: self.status_bar.showMessage(f"✅ Fuzzing 完成"))
+        self._fuzz_worker = _FuzzWorker(fuzzer, selected_endpoints, self.http_client, category)
+        self._fuzz_worker.result_ready.connect(self._on_single_result)
+        self._fuzz_worker.progress.connect(self._on_test_progress)
+        self._fuzz_worker.finished_all.connect(self._on_fuzz_finished)
+        self._fuzz_worker.error_occurred.connect(self._on_test_error)
         self._fuzz_worker.start()
+    
+    def _on_fuzz_finished(self, results):
+        """Fuzzing 完成"""
+        self.test_results = self.deduplicator.deduplicate(self.test_results)
+        self._populate_results_table()
+        self.status_bar.showMessage(f"✅ Fuzzing 完成: {len(self.test_results)} 个结果")
     
     def _on_apply_filter(self):
         """处理应用过滤按钮点击"""
@@ -1265,65 +1333,69 @@ class MainWindow(QMainWindow):
         self.results_table.setRowCount(0)
         
         for i, result in enumerate(self.test_results):
-            row_position = self.results_table.rowCount()
-            self.results_table.insertRow(row_position)
-            
-            self.results_table.setItem(row_position, 0, QTableWidgetItem(str(i + 1)))
-            
-            method_item = QTableWidgetItem(result.endpoint.method)
-            method_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.results_table.setItem(row_position, 1, method_item)
-            
-            self.results_table.setItem(row_position, 2, QTableWidgetItem(result.endpoint.url))
-            
-            status_item = QTableWidgetItem(str(result.response_status))
-            status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            
-            if 200 <= result.response_status < 300:
-                status_item.setBackground(QColor(72, 187, 120))
-                status_item.setForeground(QColor(255, 255, 255))
-            elif 400 <= result.response_status < 500:
-                status_item.setBackground(QColor(236, 201, 75))
-                status_item.setForeground(QColor(45, 55, 72))
-            elif 500 <= result.response_status < 600:
-                status_item.setBackground(QColor(245, 101, 101))
-                status_item.setForeground(QColor(255, 255, 255))
-            
-            self.results_table.setItem(row_position, 3, status_item)
-            
-            length_item = QTableWidgetItem(str(result.response_length))
-            length_item.setTextAlignment(Qt.AlignmentFlag.AlignRight)
-            self.results_table.setItem(row_position, 4, length_item)
-            
-            time_item = QTableWidgetItem(f"{result.response_time:.2f}s")
-            time_item.setTextAlignment(Qt.AlignmentFlag.AlignRight)
-            self.results_table.setItem(row_position, 5, time_item)
-            
-            sensitive_count = len(result.sensitive_info)
-            sensitive_item = QTableWidgetItem(str(sensitive_count))
-            sensitive_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            
-            if sensitive_count > 0:
-                sensitive_item.setBackground(QColor(245, 101, 101))
-                sensitive_item.setForeground(QColor(255, 255, 255))
-            
-            self.results_table.setItem(row_position, 6, sensitive_item)
-            
-            view_button = QPushButton("🔍 查看")
-            view_button.setStyleSheet("""
-                QPushButton {
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 #0ea5e9, stop:1 #0284c7);
-                    padding: 6px 12px;
-                    border-radius: 8px;
-                }
-                QPushButton:hover {
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 #38bdf8, stop:1 #0ea5e9);
-                }
-            """)
-            view_button.clicked.connect(lambda _, r=result: self._show_result_details(r))
-            self.results_table.setCellWidget(row_position, 7, view_button)
+            self._add_result_row(result, i)
+    
+    def _add_result_row(self, result, index):
+        """添加单行结果到表格"""
+        row_position = self.results_table.rowCount()
+        self.results_table.insertRow(row_position)
+        
+        self.results_table.setItem(row_position, 0, QTableWidgetItem(str(index + 1)))
+        
+        method_item = QTableWidgetItem(result.endpoint.method)
+        method_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.results_table.setItem(row_position, 1, method_item)
+        
+        self.results_table.setItem(row_position, 2, QTableWidgetItem(result.endpoint.url))
+        
+        status_item = QTableWidgetItem(str(result.response_status))
+        status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        if 200 <= result.response_status < 300:
+            status_item.setBackground(QColor(72, 187, 120))
+            status_item.setForeground(QColor(255, 255, 255))
+        elif 400 <= result.response_status < 500:
+            status_item.setBackground(QColor(236, 201, 75))
+            status_item.setForeground(QColor(45, 55, 72))
+        elif 500 <= result.response_status < 600:
+            status_item.setBackground(QColor(245, 101, 101))
+            status_item.setForeground(QColor(255, 255, 255))
+        
+        self.results_table.setItem(row_position, 3, status_item)
+        
+        length_item = QTableWidgetItem(str(result.response_length))
+        length_item.setTextAlignment(Qt.AlignmentFlag.AlignRight)
+        self.results_table.setItem(row_position, 4, length_item)
+        
+        time_item = QTableWidgetItem(f"{result.response_time:.2f}s")
+        time_item.setTextAlignment(Qt.AlignmentFlag.AlignRight)
+        self.results_table.setItem(row_position, 5, time_item)
+        
+        sensitive_count = len(result.sensitive_info)
+        sensitive_item = QTableWidgetItem(str(sensitive_count))
+        sensitive_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        if sensitive_count > 0:
+            sensitive_item.setBackground(QColor(245, 101, 101))
+            sensitive_item.setForeground(QColor(255, 255, 255))
+        
+        self.results_table.setItem(row_position, 6, sensitive_item)
+        
+        view_button = QPushButton("🔍 查看")
+        view_button.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #0ea5e9, stop:1 #0284c7);
+                padding: 6px 12px;
+                border-radius: 8px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #38bdf8, stop:1 #0ea5e9);
+            }
+        """)
+        view_button.clicked.connect(lambda _, r=result: self._show_result_details(r))
+        self.results_table.setCellWidget(row_position, 7, view_button)
     
     def _show_result_details(self, result):
         """显示结果详情"""

@@ -1,7 +1,7 @@
 """
 APISentinel_Bluechips - 设置对话框
 Author: bluechips
-Version: 1.1.0
+Version: 1.0.0
 """
 
 from PyQt6.QtWidgets import (
