@@ -76,3 +76,6 @@ config/local_config.py
 resources/temp/
 output/
 .trae/
+*.zip
+_create_release.py
+_check_release.py
